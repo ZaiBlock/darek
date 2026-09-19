@@ -32,13 +32,13 @@ const BOT_CONFIG = {
   aiModelsFallback: [
     "gemini-3.8-flash",
     "gemini-3.7-flash",
+    "gemini-3.6-flash",
     "gemini-3.5-flash",
     "gemini-3.5-flash-lite",
     "gemini-3.1-flash-lite",
     "gemini-3-flash-preview",
     "gemini-2.5-pro",
-    "gemini-2.5-flash",
-    "gemini-2.5-flash-lite"
+    "gemini-2.5-flash"
   ]
 };
 
@@ -99,10 +99,56 @@ const client = new Client({
 // Memoria en vivo
 const userHistories = new Map();
 const userImportantMemory = new Map();
+const userQueues = new Map(); // Cola asíncrona por usuario para alta velocidad sin colapsos
+
+// Función de cola por usuario (procesamiento atómico ultrarrápido)
+function enqueueUserTask(userId, task) {
+  if (!userQueues.has(userId)) {
+    userQueues.set(userId, Promise.resolve());
+  }
+  const previousTask = userQueues.get(userId);
+  const newTask = previousTask.then(() => task()).catch(err => {
+    console.error(`[Cola Usuario Error - ${userId}]:`, err);
+  });
+  userQueues.set(userId, newTask);
+  return newTask;
+}
 
 client.once('ready', () => {
   console.log(`[Discord] Bot conectado como: ${client.user.tag}`);
   console.log(`[Modelo] Modelo cargado: ${BOT_CONFIG.modelName}`);
+});
+
+// Generación de estado personalizado aleatorio de forma autónoma cada 30 minutos
+cron.schedule('*/30 * * * *', async () => {
+  try {
+    if (!client.user) return;
+    const aiModel = genAI.getGenerativeModel({ 
+      model: BOT_CONFIG.aiModelsFallback[0], 
+      systemInstruction: personalityPrompt 
+    });
+    const prompt = "Genera un nuevo estado personalizado corto para tu burbuja de perfil de Discord acorde a tu personalidad actual. Responde ÚNICAMENTE con el bloque JSON <<<BOT_STATE ... BOT_STATE>>>.";
+    const result = await aiModel.generateContent(prompt);
+    const text = result.response.text();
+    
+    const stateMatch = text.match(/<<<BOT_STATE\s*([\s\S]*?)\s*BOT_STATE>>>/);
+    if (stateMatch) {
+      const botState = JSON.parse(stateMatch[1]);
+      if (botState.customStatus) {
+        client.user.setPresence({
+          status: botState.status || 'online',
+          activities: [{
+            name: 'Custom Status',
+            state: botState.customStatus,
+            type: ActivityType.Custom
+          }]
+        });
+        console.log(`[Estado Autónomo] Burbuja actualizada: "${botState.customStatus}"`);
+      }
+    }
+  } catch (error) {
+    console.warn("[Estado Autónomo] No se pudo cambiar el estado en este ciclo:", error.message);
+  }
 });
 
 // Función con Fallback automático entre la lista de modelos
@@ -145,39 +191,41 @@ client.on('messageCreate', async (message) => {
 
   if (!isDM && !isMentioned && !hasTrigger) return;
 
-  try {
-    await message.channel.sendTyping();
+  // Encolar solicitud para manejar ráfagas de mensajes del mismo usuario de forma ordenada y ultrarrápida
+  enqueueUserTask(message.author.id, async () => {
+    try {
+      await message.channel.sendTyping();
 
-    const userId = message.author.id;
-    const author = message.author;
-    const member = message.member;
+      const userId = message.author.id;
+      const author = message.author;
+      const member = message.member;
 
-    // Obtener Perfil Completo del Usuario
-    const userProfile = {
-      id: userId,
-      username: author.username,
-      globalName: author.globalName || author.username,
-      nickname: member ? member.nickname || author.username : author.username,
-      avatarURL: author.displayAvatarURL(),
-      status: member?.presence?.status || 'desconocido',
-      customStatus: member?.presence?.activities.find(a => a.type === 4)?.state || 'Ninguno',
-      activities: member?.presence?.activities.map(a => `${a.name} (${a.type})`).join(', ') || 'Ninguna'
-    };
+      // Obtener Perfil Completo del Usuario
+      const userProfile = {
+        id: userId,
+        username: author.username,
+        globalName: author.globalName || author.username,
+        nickname: member ? member.nickname || author.username : author.username,
+        avatarURL: author.displayAvatarURL(),
+        status: member?.presence?.status || 'desconocido',
+        customStatus: member?.presence?.activities.find(a => a.type === 4)?.state || 'Ninguno',
+        activities: member?.presence?.activities.map(a => `${a.name} (${a.type})`).join(', ') || 'Ninguna'
+      };
 
-    // Recuperar historial previo y memoria
-    if (!userHistories.has(userId)) {
-      userHistories.set(userId, []);
-    }
-    const history = userHistories.get(userId);
-    const longTermMemory = userImportantMemory.get(userId) || "Ninguna guardada aún.";
+      // Recuperar historial previo y memoria
+      if (!userHistories.has(userId)) {
+        userHistories.set(userId, []);
+      }
+      const history = userHistories.get(userId);
+      const longTermMemory = userImportantMemory.get(userId) || "Ninguna guardada aún.";
 
-    // Construir el Contexto del Mensaje
-    const promptContext = `
+      // Construir el Contexto del Mensaje
+      const promptContext = `
 INFORMACIÓN DEL USUARIO QUE TE HABLA:
 - Nombre / Nick: ${userProfile.nickname} (@${userProfile.username})
 - Nombre Global: ${userProfile.globalName}
 - Estado de Discord: ${userProfile.status}
-- Estado Personalizado: ${userProfile.customStatus}
+- Estado Personalizado (Burbuja): ${userProfile.customStatus}
 - Actividades en curso: ${userProfile.activities}
 - Avatar URL: ${userProfile.avatarURL}
 
@@ -191,58 +239,67 @@ MENSAJE ACTUAL DEL USUARIO:
 ${message.content}
 `;
 
-    const formattedHistory = history.map(h => ({
-      role: h.role === 'model' ? 'model' : 'user',
-      parts: [{ text: h.text }]
-    }));
+      const formattedHistory = history.map(h => ({
+        role: h.role === 'model' ? 'model' : 'user',
+        parts: [{ text: h.text }]
+      }));
 
-    // Ejecutar con Sistema Fallback en cadena
-    let fullResponse = await generateWithFallback(formattedHistory, promptContext);
-    let replyMessage = fullResponse;
+      // Ejecutar con Sistema Fallback en cadena
+      let fullResponse = await generateWithFallback(formattedHistory, promptContext);
+      let replyMessage = fullResponse;
 
-    // Extraer datos de control de estado y memoria
-    const stateMatch = fullResponse.match(/<<<BOT_STATE\s*([\s\S]*?)\s*BOT_STATE>>>/);
-    if (stateMatch) {
-      replyMessage = fullResponse.replace(/<<<BOT_STATE[\s\S]*?BOT_STATE>>>/, '').trim();
-      try {
-        const botState = JSON.parse(stateMatch[1]);
+      // Extraer datos de control de estado y memoria
+      const stateMatch = fullResponse.match(/<<<BOT_STATE\s*([\s\S]*?)\s*BOT_STATE>>>/);
+      if (stateMatch) {
+        replyMessage = fullResponse.replace(/<<<BOT_STATE[\s\S]*?BOT_STATE>>>/, '').trim();
+        try {
+          const botState = JSON.parse(stateMatch[1]);
 
-        // Actualizar Presencia en Discord
-        if (botState.status || botState.activityType) {
-          const actType = ActivityType[botState.activityType] || ActivityType.Playing;
-          client.user.setPresence({
-            status: botState.status || 'online',
-            activities: [{ name: botState.activityText || 'con tus pensamientos', type: actType }]
-          });
+          // Actualizar Estado Personalizado (Burbuja de Perfil de Discord)
+          if (botState.customStatus || botState.status) {
+            const presenceConfig = {
+              status: botState.status || 'online'
+            };
+
+            if (botState.customStatus) {
+              presenceConfig.activities = [{
+                name: 'Custom Status',
+                state: botState.customStatus,
+                type: ActivityType.Custom
+              }];
+            }
+
+            client.user.setPresence(presenceConfig);
+          }
+
+          // Actualizar Memoria Importante
+          if (botState.importantMemoryUpdate) {
+            const currentMem = userImportantMemory.get(userId) || "";
+            userImportantMemory.set(userId, `${currentMem} | ${botState.importantMemoryUpdate}`.trim());
+          }
+        } catch (e) {
+          console.error("[State Parser Error]", e.message);
         }
-
-        // Actualizar Memoria Importante
-        if (botState.importantMemoryUpdate) {
-          const currentMem = userImportantMemory.get(userId) || "";
-          userImportantMemory.set(userId, `${currentMem} | ${botState.importantMemoryUpdate}`.trim());
-        }
-      } catch (e) {
-        console.error("[State Parser Error]", e.message);
       }
+
+      // Responder en el canal de Discord
+      if (replyMessage.length > 0) {
+        await message.reply(replyMessage);
+      }
+
+      // Actualizar historial local por usuario
+      history.push({ role: 'user', text: message.content });
+      history.push({ role: 'model', text: replyMessage });
+
+      if (history.length > BOT_CONFIG.maxHistoryPerUser * 2) {
+        history.splice(0, 2);
+      }
+
+    } catch (error) {
+      console.error('[Error Crítico en Darek]:', error);
+      await message.reply('*(sonríe amigablemente mientras sus ojos parpadean en rojo)* Ups, mis circuitos colapsaron por un segundo... intenta hablarme de nuevo.');
     }
-
-    // Responder en el canal de Discord
-    if (replyMessage.length > 0) {
-      await message.reply(replyMessage);
-    }
-
-    // Actualizar historial local por usuario
-    history.push({ role: 'user', text: message.content });
-    history.push({ role: 'model', text: replyMessage });
-
-    if (history.length > BOT_CONFIG.maxHistoryPerUser * 2) {
-      history.splice(0, 2);
-    }
-
-  } catch (error) {
-    console.error('[Error Crítico en Darek]:', error);
-    await message.reply('*(sonríe amigablemente mientras sus ojos parpadean en rojo)* Ups, mis circuitos colapsaron por un segundo... intenta hablarme de nuevo.');
-  }
+  });
 });
 
 // Inicio de sesión con validación absoluta
