@@ -232,4 +232,7 @@ ${message.content}
   }
 });
 
-client.login(process.env.DISCORD_TOKEN);
+// Inicio de sesión con captura explícita de errores
+client.login(process.env.DISCORD_TOKEN).catch(error => {
+  console.error("[Error Crítico] No se pudo autenticar con Discord:", error.message);
+});
