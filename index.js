@@ -9,6 +9,19 @@ import path from 'path';
 dotenv.config();
 
 // ==========================================
+// VALIDACIÓN DE SEGURIDAD DE CREDENCIALES
+// ==========================================
+if (!process.env.DISCORD_TOKEN) {
+  console.error("[Error Crítico] ¡Falta la variable de entorno DISCORD_TOKEN! Configúrala en Render.");
+  process.exit(1);
+}
+
+if (!process.env.GEMINI_API_KEY) {
+  console.error("[Error Crítico] ¡Falta la variable de entorno GEMINI_API_KEY! Configúrala en Render.");
+  process.exit(1);
+}
+
+// ==========================================
 // CONFIGURACIÓN DEL MODELO "Kbot RevOlution"
 // ==========================================
 const BOT_CONFIG = {
@@ -232,7 +245,8 @@ ${message.content}
   }
 });
 
-// Inicio de sesión con captura de errores para ver el motivo exacto en los logs
+// Inicio de sesión con validación absoluta
+console.log("[Sistema] Intentando conectar con Discord...");
 client.login(process.env.DISCORD_TOKEN).catch(error => {
-  console.error("[Error Crítico] No se pudo autenticar con Discord:", error.message);
+  console.error("[Error Crítico de Discord] Falló la autenticación:", error.message);
 });
