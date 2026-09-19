@@ -3,16 +3,49 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 import express from 'express';
 import cron from 'node-cron';
 import dotenv from 'dotenv';
-import { BOT_CONFIG } from './config.js';
+import fs from 'fs';
+import path from 'path';
 
 dotenv.config();
 
-// Inicialización de Google Gemini AI (SDK Clásico Estable)
+// ==========================================
+// CONFIGURACIÓN DEL MODELO "Kbot RevOlution"
+// ==========================================
+const BOT_CONFIG = {
+  modelName: "Kbot Bot model 1.0: RevOlution",
+  version: "1.0.0",
+  triggers: ["dar", "dare", "darek", "rek"],
+  maxHistoryPerUser: 15,
+  // Familia de modelos en orden de prioridad (Fallback automático)
+aiModelsFallback: [
+  "gemini-3.8-flash",         // El más nuevo, inteligente y optimizado para agentes (Septiembre 2026)
+  "gemini-3.7-flash",         // Versión previa estable y equilibrada de la serie 3
+  "gemini-3.5-flash",         // Modelo de volumen con excelente ventana de contexto
+  "gemini-3.5-flash-lite",    // Ultra veloz y óptimo para tareas sencillas/extracción
+  "gemini-3.1-flash-lite",    // Respaldo de volumen de la generación 3.x
+  "gemini-3-flash-preview",   // Modelo base de pruebas de la serie 3
+  "gemini-2.5-pro",           // Único modelo Pro remanente con soporte gratuito (uso limitado)
+  "gemini-2.5-flash",         // Red de seguridad clásica de producción
+  "gemini-2.5-flash-lite"     // Último recurso de contingencia
+]
+
+
+// Cargar la personalidad desde el archivo personality.txt
+let personalityPrompt = "Eres Darek, un bot amigable pero psicópata en el fondo.";
+try {
+  const txtPath = path.join(process.cwd(), 'personality.txt');
+  if (fs.existsSync(txtPath)) {
+    personalityPrompt = fs.readFileSync(txtPath, 'utf8');
+    console.log("[Sistema] Personalidad cargada exitosamente desde 'personality.txt'.");
+  } else {
+    console.warn("[Advertencia] No se encontró 'personality.txt', usando personalidad por defecto.");
+  }
+} catch (error) {
+  console.error("[Error] Al leer 'personality.txt':", error.message);
+}
+
+// Inicialización de Google Gemini AI
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-const aiModel = genAI.getGenerativeModel({ 
-  model: BOT_CONFIG.aiModel,
-  systemInstruction: BOT_CONFIG.personalityPrompt
-});
 
 // Servidor Express para Keep-Alive en Render
 const app = express();
@@ -59,6 +92,32 @@ client.once('ready', () => {
   console.log(`[Discord] Bot conectado como: ${client.user.tag}`);
   console.log(`[Modelo] Modelo cargado: ${BOT_CONFIG.modelName}`);
 });
+
+// Función con Fallback automático entre modelos Gemini
+async function generateWithFallback(historyForChat, promptContext) {
+  let lastError = null;
+
+  for (const modelName of BOT_CONFIG.aiModelsFallback) {
+    try {
+      const aiModel = genAI.getGenerativeModel({ 
+        model: modelName,
+        systemInstruction: personalityPrompt
+      });
+
+      const chatSession = aiModel.startChat({
+        history: historyForChat
+      });
+
+      const result = await chatSession.sendMessage(promptContext);
+      return result.response.text();
+    } catch (error) {
+      console.warn(`[Fallback] Falló el modelo ${modelName}: ${error.message}. Intentando siguiente...`);
+      lastError = error;
+    }
+  }
+
+  throw new Error(`Todos los modelos de IA fallaron. Último error: ${lastError?.message}`);
+}
 
 client.on('messageCreate', async (message) => {
   if (message.author.bot) return;
@@ -120,16 +179,13 @@ MENSAJE ACTUAL DEL USUARIO:
 ${message.content}
 `;
 
-    // Consulta a Gemini AI usando chat para mantener contexto fluido
-    const chatSession = aiModel.startChat({
-      history: history.map(h => ({
-        role: h.role === 'model' ? 'model' : 'user',
-        parts: [{ text: h.text }]
-      }))
-    });
+    const formattedHistory = history.map(h => ({
+      role: h.role === 'model' ? 'model' : 'user',
+      parts: [{ text: h.text }]
+    }));
 
-    const result = await chatSession.sendMessage(promptContext);
-    let fullResponse = result.response.text();
+    // Ejecutar con Sistema Fallback
+    let fullResponse = await generateWithFallback(formattedHistory, promptContext);
     let replyMessage = fullResponse;
 
     // Extraer datos de control de estado y memoria
@@ -172,8 +228,8 @@ ${message.content}
     }
 
   } catch (error) {
-    console.error('[Error Gemini/Discord]:', error);
-    await message.reply('*(sonríe amigablemente mientras sus ojos parpadean en rojo)* Ups, pareces haber roto un cable dentro de mi cabeza... intenta otra vez.');
+    console.error('[Error Crítico en Darek]:', error);
+    await message.reply('*(sonríe amigablemente mientras sus ojos parpadean en rojo)* Ups, mis circuitos colapsaron por un segundo... intenta hablarme de nuevo.');
   }
 });
 
