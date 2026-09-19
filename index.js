@@ -1,5 +1,5 @@
 import { Client, GatewayIntentBits, Partials, ActivityType } from 'discord.js';
-import { GoogleGenAI } from '@google/genai';
+import { GoogleGenerativeAI } from '@google/generative-ai';
 import express from 'express';
 import cron from 'node-cron';
 import dotenv from 'dotenv';
@@ -7,8 +7,12 @@ import { BOT_CONFIG } from './config.js';
 
 dotenv.config();
 
-// Inicialización de Google Gemini AI
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+// Inicialización de Google Gemini AI (SDK Clásico Estable)
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+const aiModel = genAI.getGenerativeModel({ 
+  model: BOT_CONFIG.aiModel,
+  systemInstruction: BOT_CONFIG.personalityPrompt
+});
 
 // Servidor Express para Keep-Alive en Render
 const app = express();
@@ -89,7 +93,7 @@ client.on('messageCreate', async (message) => {
       activities: member?.presence?.activities.map(a => `${a.name} (${a.type})`).join(', ') || 'Ninguna'
     };
 
-    // Recuperar historial previo
+    // Recuperar historial previo y memoria
     if (!userHistories.has(userId)) {
       userHistories.set(userId, []);
     }
@@ -109,23 +113,23 @@ INFORMACIÓN DEL USUARIO QUE TE HABLA:
 MEMORIA IMPORTANTE A LARGO PLAZO DE ESTE USUARIO:
 ${longTermMemory}
 
-HISTORIAL DE MENSAJES RECIENTES CON ESTE USUARIO:
+HISTORIAL DE MENSAJES RECIENTES:
 ${history.map(h => `${h.role}:${h.text}`).join('\n')}
 
 MENSAJE ACTUAL DEL USUARIO:
 ${message.content}
 `;
 
-    // Consulta a Gemini AI
-    const response = await ai.models.generateContent({
-      model: BOT_CONFIG.aiModel,
-      contents: promptContext,
-      config: {
-        systemInstruction: BOT_CONFIG.personalityPrompt
-      }
+    // Consulta a Gemini AI usando chat para mantener contexto fluido
+    const chatSession = aiModel.startChat({
+      history: history.map(h => ({
+        role: h.role === 'model' ? 'model' : 'user',
+        parts: [{ text: h.text }]
+      }))
     });
 
-    let fullResponse = response.text;
+    const result = await chatSession.sendMessage(promptContext);
+    let fullResponse = result.response.text();
     let replyMessage = fullResponse;
 
     // Extraer datos de control de estado y memoria
