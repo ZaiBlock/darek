@@ -16,19 +16,18 @@ const BOT_CONFIG = {
   version: "1.0.0",
   triggers: ["dar", "dare", "darek", "rek"],
   maxHistoryPerUser: 15,
-  // Familia de modelos en orden de prioridad (Fallback automático)
-aiModelsFallback: [
-  "gemini-3.8-flash",         // El más nuevo, inteligente y optimizado para agentes (Septiembre 2026)
-  "gemini-3.7-flash",         // Versión previa estable y equilibrada de la serie 3
-  "gemini-3.5-flash",         // Modelo de volumen con excelente ventana de contexto
-  "gemini-3.5-flash-lite",    // Ultra veloz y óptimo para tareas sencillas/extracción
-  "gemini-3.1-flash-lite",    // Respaldo de volumen de la generación 3.x
-  "gemini-3-flash-preview",   // Modelo base de pruebas de la serie 3
-  "gemini-2.5-pro",           // Único modelo Pro remanente con soporte gratuito (uso limitado)
-  "gemini-2.5-flash",         // Red de seguridad clásica de producción
-  "gemini-2.5-flash-lite"     // Último recurso de contingencia
-]
-
+  aiModelsFallback: [
+    "gemini-3.8-flash",
+    "gemini-3.7-flash",
+    "gemini-3.5-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-3.1-flash-lite",
+    "gemini-3-flash-preview",
+    "gemini-2.5-pro",
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite"
+  ]
+};
 
 // Cargar la personalidad desde el archivo personality.txt
 let personalityPrompt = "Eres Darek, un bot amigable pero psicópata en el fondo.";
@@ -93,7 +92,7 @@ client.once('ready', () => {
   console.log(`[Modelo] Modelo cargado: ${BOT_CONFIG.modelName}`);
 });
 
-// Función con Fallback automático entre modelos Gemini
+// Función con Fallback automático entre la lista de modelos
 async function generateWithFallback(historyForChat, promptContext) {
   let lastError = null;
 
@@ -111,7 +110,7 @@ async function generateWithFallback(historyForChat, promptContext) {
       const result = await chatSession.sendMessage(promptContext);
       return result.response.text();
     } catch (error) {
-      console.warn(`[Fallback] Falló el modelo ${modelName}: ${error.message}. Intentando siguiente...`);
+      console.warn(`[Fallback] Modelo ${modelName} no disponible o falló: ${error.message}. Probando siguiente...`);
       lastError = error;
     }
   }
@@ -184,7 +183,7 @@ ${message.content}
       parts: [{ text: h.text }]
     }));
 
-    // Ejecutar con Sistema Fallback
+    // Ejecutar con Sistema Fallback en cadena
     let fullResponse = await generateWithFallback(formattedHistory, promptContext);
     let replyMessage = fullResponse;
 
