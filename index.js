@@ -28,13 +28,17 @@ const BOT_CONFIG = {
   modelName: "Kbot Bot model 1.0: RevOlution",
   version: "1.0.0",
   triggers: ["dar", "dare", "darek", "rek"],
-  maxHistoryPerUser: 15, // Mantiene un contexto amplio por usuario
+  maxHistoryPerUser: 15,
   aiModelsFallback: [
-    "gemini-2.5-flash",
-    "gemini-2.5-flash-lite",
+    "gemini-3.8-flash",
+    "gemini-3.7-flash",
+    "gemini-3.5-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-3.1-flash-lite",
+    "gemini-3-flash-preview",
     "gemini-2.5-pro",
-    "gemini-1.5-flash",
-    "gemini-1.5-pro"
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite"
   ]
 };
 
@@ -92,13 +96,13 @@ const client = new Client({
   partials: [Partials.Channel, Partials.Message]
 });
 
-// Memoria en vivo separada por usuario
+// Memoria en vivo
 const userHistories = new Map();
 const userImportantMemory = new Map();
 
 client.once('ready', () => {
   console.log(`[Discord] Bot conectado como: ${client.user.tag}`);
-  console.log(`[Modelo] Base cargada: ${BOT_CONFIG.modelName}`);
+  console.log(`[Modelo] Modelo cargado: ${BOT_CONFIG.modelName}`);
 });
 
 // Función con Fallback automático entre la lista de modelos
@@ -119,10 +123,11 @@ async function generateWithFallback(historyForChat, promptContext) {
       const result = await chatSession.sendMessage(promptContext);
       return result.response.text();
     } catch (error) {
-      console.warn(`[Fallback] Modelo ${modelName} falló: ${error.message}. Probando siguiente...`);
+      console.warn(`[Fallback] Modelo ${modelName} no disponible o falló: ${error.message}. Probando siguiente...`);
       lastError = error;
     }
   }
+
   throw new Error(`Todos los modelos de IA fallaron. Último error: ${lastError?.message}`);
 }
 
@@ -147,7 +152,7 @@ client.on('messageCreate', async (message) => {
     const author = message.author;
     const member = message.member;
 
-    // Obtener Perfil Completo del Usuario para contexto de la IA
+    // Obtener Perfil Completo del Usuario
     const userProfile = {
       id: userId,
       username: author.username,
@@ -159,14 +164,14 @@ client.on('messageCreate', async (message) => {
       activities: member?.presence?.activities.map(a => `${a.name} (${a.type})`).join(', ') || 'Ninguna'
     };
 
-    // Inicializar y recuperar historial previo / memoria
+    // Recuperar historial previo y memoria
     if (!userHistories.has(userId)) {
       userHistories.set(userId, []);
     }
     const history = userHistories.get(userId);
     const longTermMemory = userImportantMemory.get(userId) || "Ninguna guardada aún.";
 
-    // Construir el Contexto enriquecido
+    // Construir el Contexto del Mensaje
     const promptContext = `
 INFORMACIÓN DEL USUARIO QUE TE HABLA:
 - Nombre / Nick: ${userProfile.nickname} (@${userProfile.username})
@@ -179,6 +184,9 @@ INFORMACIÓN DEL USUARIO QUE TE HABLA:
 MEMORIA IMPORTANTE A LARGO PLAZO DE ESTE USUARIO:
 ${longTermMemory}
 
+HISTORIAL DE MENSAJES RECIENTES:
+${history.map(h => `${h.role}:${h.text}`).join('\n')}
+
 MENSAJE ACTUAL DEL USUARIO:
 ${message.content}
 `;
@@ -188,27 +196,27 @@ ${message.content}
       parts: [{ text: h.text }]
     }));
 
-    // Ejecutar IA
+    // Ejecutar con Sistema Fallback en cadena
     let fullResponse = await generateWithFallback(formattedHistory, promptContext);
     let replyMessage = fullResponse;
 
-    // Extraer lógica de control de estado y memoria (JSON oculto de la IA)
+    // Extraer datos de control de estado y memoria
     const stateMatch = fullResponse.match(/<<<BOT_STATE\s*([\s\S]*?)\s*BOT_STATE>>>/);
     if (stateMatch) {
       replyMessage = fullResponse.replace(/<<<BOT_STATE[\s\S]*?BOT_STATE>>>/, '').trim();
       try {
         const botState = JSON.parse(stateMatch[1]);
 
-        // La IA actualiza su presencia en Discord
+        // Actualizar Presencia en Discord
         if (botState.status || botState.activityType) {
           const actType = ActivityType[botState.activityType] || ActivityType.Playing;
           client.user.setPresence({
             status: botState.status || 'online',
-            activities: [{ name: botState.activityText || 'observándote', type: actType }]
+            activities: [{ name: botState.activityText || 'con tus pensamientos', type: actType }]
           });
         }
 
-        // La IA guarda memoria nueva si lo considera necesario
+        // Actualizar Memoria Importante
         if (botState.importantMemoryUpdate) {
           const currentMem = userImportantMemory.get(userId) || "";
           userImportantMemory.set(userId, `${currentMem} | ${botState.importantMemoryUpdate}`.trim());
@@ -218,12 +226,12 @@ ${message.content}
       }
     }
 
-    // Responder
+    // Responder en el canal de Discord
     if (replyMessage.length > 0) {
       await message.reply(replyMessage);
     }
 
-    // Actualizar array local de historial por usuario
+    // Actualizar historial local por usuario
     history.push({ role: 'user', text: message.content });
     history.push({ role: 'model', text: replyMessage });
 
